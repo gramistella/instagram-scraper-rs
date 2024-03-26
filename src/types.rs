@@ -4,6 +4,13 @@
 
 use std::time::SystemTime;
 
+#[derive(Clone, Hash, Eq, PartialEq, Debug, Serialize, Deserialize)]
+pub struct RateLimitError {
+    pub message: String,
+    pub require_login: bool,
+    pub status: String,
+}
+
 /// User post
 #[derive(Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Post {

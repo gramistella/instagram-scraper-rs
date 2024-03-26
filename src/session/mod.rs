@@ -2,10 +2,10 @@
 //!
 //! This module exposes the session for the instagram client
 
-use std::sync::Arc;
 use crate::{types::Comment, Authentication, InstagramScraperError, InstagramScraperResult, Post};
-use reqwest_cookie_store::CookieStoreMutex;
 use reqwest::{header, Client, ClientBuilder, Response};
+use reqwest_cookie_store::CookieStoreMutex;
+use std::sync::Arc;
 use urlencoding::encode;
 
 mod requests;
@@ -13,6 +13,7 @@ use requests::{
     BASE_URL, CHROME_WIN_USER_AGENT, LOGIN_URL, LOGOUT_URL, STORIES_USER_AGENT, X_CSRF_TOKEN,
 };
 
+use crate::types::RateLimitError;
 pub use crate::{Stories, Story, User};
 
 const DEFAULT_POST_AMOUNT: usize = 50;
@@ -24,32 +25,55 @@ const DEFAULT_COMMENTS_AMOUNT: usize = 50;
 pub struct Session {
     csrftoken: Option<String>,
     client: Client,
-
+    pub cookie_store: Arc<CookieStoreMutex>,
 }
 
 impl Default for Session {
     fn default() -> Self {
+        // Load an existing set of cookies, serialized as json
+        let cookie_store = {
+            let file = std::fs::File::open("cookies/cookies.json")
+                .map(std::io::BufReader::new)
+                .unwrap();
+            // use re-exported version of `CookieStore` for crate compatibility
+            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
+        };
+        let cookie_store = reqwest_cookie_store::CookieStoreMutex::new(cookie_store);
+        let cookie_store = std::sync::Arc::new(cookie_store);
+
         Self {
             csrftoken: None,
             client: ClientBuilder::new()
-                .cookie_store(true)
+                .cookie_provider(Arc::clone(&cookie_store))
                 .user_agent(STORIES_USER_AGENT)
                 .build()
                 .unwrap(),
+            cookie_store,
         }
     }
-
 }
 
 impl Session {
-    pub fn with_cookie_provider(cookie_provider: Arc<CookieStoreMutex>) -> Self {
+    pub fn with_cookie_store(cookie_store_path: &str) -> Self {
+        // Load an existing set of cookies, serialized as json
+        let cookie_store = {
+            let file = std::fs::File::open(cookie_store_path)
+                .map(std::io::BufReader::new)
+                .unwrap();
+            // use re-exported version of `CookieStore` for crate compatibility
+            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
+        };
+        let cookie_store = reqwest_cookie_store::CookieStoreMutex::new(cookie_store);
+        let cookie_store = std::sync::Arc::new(cookie_store);
+
         Self {
             csrftoken: None,
             client: ClientBuilder::new()
-                .cookie_provider(Arc::clone(&cookie_provider))
+                .cookie_provider(Arc::clone(&cookie_store))
                 .user_agent(STORIES_USER_AGENT)
                 .build()
                 .unwrap(),
+            cookie_store,
         }
     }
 }
@@ -129,13 +153,13 @@ impl Session {
             ))
             .send()
             .await?;
+
         Self::restrict_successful(&response)?;
         self.update_csrftoken(&response);
         // Get the response text
         let response_text = response.text().await?;
-
         // Print the response text
-        // println!("Response text: {}", response_text);
+        //println!("Response text: {}", response_text);
 
         // Proceed with your existing match logic, using the response_text variable
         match serde_json::from_str::<requests::WebProfileResponse>(&response_text) {
@@ -228,13 +252,18 @@ impl Session {
                 .await?;
             Self::restrict_successful(&response)?;
             self.update_csrftoken(&response);
-            match response
-                .text()
-                .await
-                .map(|t| serde_json::from_str::<requests::PostResponse>(&t))
-            {
-                Err(err) => return Err(err.into()),
-                Ok(Ok(post_response)) => {
+
+            // Get the response text
+            let response_text = response.text().await?;
+
+            match serde_json::from_str::<requests::PostResponse>(&response_text) {
+                Err(err) => {
+                    // Print the response text
+                    // println!("Error response text 1: {}", response_text);
+                    // It seems like it tries to redirect to the "We suspect automated behavior" page
+                    return Err(err.into());
+                }
+                Ok(post_response) => {
                     let new_cursor = post_response.end_cursor().map(|x| x.to_string());
                     let response_posts = post_response.posts();
                     debug!("found {} posts", response_posts.len());
@@ -252,11 +281,11 @@ impl Session {
                     }
                     cursor = new_cursor.unwrap();
                 }
-                Ok(Err(err)) => return Err(err.into()),
             }
         }
         Ok(posts)
     }
+
     pub async fn upload_reel(
         &mut self,
         user_id: &str,
@@ -264,7 +293,6 @@ impl Session {
         video_url: &str,
         caption: &str,
     ) -> Result<(), InstagramScraperError> {
-
         // You only need these three
         // https://graph.facebook.com/v5.0/{ig-user-id}/media?video_url={video-url}&caption={caption}&access_token={access-token}
         // https://graph.facebook.com/v19.0/{ig-container-id}?fields=status_code
@@ -291,13 +319,15 @@ impl Session {
                     "Error while creating media container uploading:\n {}",
                     serde_json::to_string_pretty(&data).unwrap()
                 );
-                return Err(InstagramScraperError::Generic(error_message));
+                return Err(InstagramScraperError::UploadFailed(error_message));
             }
         };
 
         //println!("Full url: \n{}", full_url);
         //println!("Response: {:?}", response_text);
         let mut status_code = String::new();
+        let status_check_delay = 10;
+        let mut in_progess = false;
         while status_code != "FINISHED" {
             let response = self
                 .client
@@ -311,29 +341,32 @@ impl Session {
             let response_text = response.text().await.unwrap().clone();
             let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
             status_code = data["status_code"].as_str().unwrap().to_string();
-            println!(
-                " -> [+] Uploading reel to Instagram... Status code: {}",
-                status_code
-            );
-            //println!("Status code: {}", status_code);
-
-            if status_code == "ERROR" {
+            if status_code == "FINISHED" {
+                println!(" +> [+] Reel uploaded successfully!");
+                break;
+            } else if status_code == "IN_PROGRESS" {
+                if !in_progess {
+                    println!(" +> [+] Uploading reel to Instagram...");
+                    in_progess = true;
+                }
+            } else if status_code == "ERROR" {
                 let error_message = data["status"].as_str().unwrap().to_string();
                 if error_message.contains("2207050") {
-                    let error = "Error while uploading: \nThe app user's Instagram Professional account is inactive, checkpointed, or restricted. Advise the app user to sign in to the Instagram app and complete any actions the app requires to re-enable their account.";
-                    return Err(InstagramScraperError::Generic(error.to_string()));
+                    let error = "The app user's Instagram Professional account is inactive, checkpointed, or restricted. Advise the app user to sign in to the Instagram app and complete any actions the app requires to re-enable their account.";
+                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
                 } else if error_message.contains("2207026") {
-                    let error = "Error while uploading: \nUnsupported video format. Advise the app user to upload an MOV or MP4";
-                    return Err(InstagramScraperError::Generic(error.to_string()));
+                    let error =
+                        "Unsupported video format. Advise the app user to upload an MOV or MP4";
+                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
                 } else {
-                    let error = format!(
-                        "Error while uploading reel: {}",
-                        data["status"].as_str().unwrap().to_string()
-                    );
-                    return Err(InstagramScraperError::Generic(error.to_string()));
+                    let error = format!("{}", serde_json::to_string_pretty(&data).unwrap());
+                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
                 }
+            } else {
+                println!("Unknown status code: {}", status_code);
             }
-            std::thread::sleep(std::time::Duration::from_secs(10));
+
+            tokio::time::sleep(std::time::Duration::from_secs(status_check_delay)).await;
         }
 
         println!(" +> [+] Publishing reel to Instagram...");
@@ -370,7 +403,14 @@ impl Session {
         let response = self.client.get(query_string).send().await.unwrap();
 
         let response_text = response.text().await.unwrap().clone();
-        let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        let data: serde_json::Value = match serde_json::from_str(&response_text) {
+            Ok(data) => data,
+            Err(err) => {
+                let error_text = format!("{}\n{}", err, response_text);
+                //println!("Response text: {}", response_text);
+                return Err(InstagramScraperError::ParsingFailed(error_text));
+            }
+        };
         let video_url = if let Some(extracted_url) = data["data"]["shortcode_media"]["video_url"]
             .as_str()
             .clone()
@@ -378,10 +418,23 @@ impl Session {
             //println!("Video URL: {}", video_url);
             extracted_url.to_string()
         } else {
+            // {
+            //   "message": "Please wait a few minutes before you try again.",
+            //   "require_login": true,
+            //   "status": "fail"
+            // }
             let pretty = serde_json::to_string_pretty(&data).unwrap();
-            //println!("'video_url' field not found, data: \n{}", pretty);
-            let error_text = format!("'video_url' field not found, \n{}", pretty);
-            return Err(InstagramScraperError::FieldNotFound(error_text));
+            let rate_limit_error: RateLimitError = match serde_json::from_str(&pretty) {
+                Ok(rate_limit_error) => rate_limit_error,
+                Err(err) => {
+                    let error_text = format!("{}\n{}", err, pretty);
+                    return Err(InstagramScraperError::ParsingFailed(error_text));
+                }
+            };
+
+            let err_string = format!("{}", rate_limit_error.message);
+
+            return Err(InstagramScraperError::RateLimitExceeded(err_string));
         };
 
         let mut caption = String::new();
@@ -509,8 +562,21 @@ impl Session {
         username: String,
         password: String,
     ) -> InstagramScraperResult<String> {
-        debug!("authenticating with username and password");
-        let token = self.request_csrftoken().await?;
+        let token;
+        if self.cookie_store.lock().unwrap().iter_unexpired().count() == 0 {
+            debug!("authenticating with username and password");
+            token = self.request_csrftoken().await?;
+        } else {
+            //self.cookie_store.lock().unwrap().iter_unexpired().for_each(|x| println!("{:?} {:?} {:?}", x.domain, x.path, x.value()));
+            token = self
+                .cookie_store
+                .lock()
+                .unwrap()
+                .get("instagram.com", "/", "csrftoken")
+                .unwrap()
+                .value()
+                .to_string();
+        }
 
         let response = self
             .client
@@ -527,9 +593,6 @@ impl Session {
             .await?;
         Self::restrict_successful(&response)?;
         debug!("setting cookies received from response");
-
-        // let cookies = response.cookies().collect::<Vec<_>>();
-        // println!("Cookies: {:?}", cookies);
 
         let body: requests::UsernamePasswordLoginResponse = response.json().await?;
         if body.authenticated {
@@ -552,6 +615,7 @@ impl Session {
             .send()
             .await?;
         Self::restrict_successful(&response)?;
+        //println!("{}", response.text().await.unwrap());
         trace!("login status: {}", response.status());
         let mut cookies = response.cookies();
         match cookies
@@ -611,7 +675,7 @@ impl Session {
     ///
     /// it must be called as `Self::restrict_successful(&response)?;`
     fn restrict_successful(response: &reqwest::Response) -> InstagramScraperResult<()> {
-        debug!("response status {}", response.status());
+        //println!("response status {}", response.status());
         match response.status().is_success() {
             true => Ok(()),
             false => Err(InstagramScraperError::from(response.status())),

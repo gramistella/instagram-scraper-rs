@@ -25,6 +25,12 @@ pub enum InstagramScraperError {
     FieldNotFound(String),
     #[error("Generic error: {0}")]
     Generic(String),
+    #[error("Rate limited: {0}")]
+    RateLimitExceeded(String),
+    #[error("Parsing failed: {0}")]
+    ParsingFailed(String),
+    #[error("Upload failed: {0}")]
+    UploadFailed(String),
 }
 
 impl From<serde_json::Error> for InstagramScraperError {

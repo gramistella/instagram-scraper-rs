@@ -59,8 +59,6 @@ mod errors;
 mod session;
 mod types;
 
-use std::sync::Arc;
-use reqwest_cookie_store::CookieStoreMutex;
 use session::Session;
 use types::Authentication;
 
@@ -69,9 +67,10 @@ pub use errors::{InstagramScraperError, InstagramScraperResult};
 pub use types::{Comment, Post, Stories, Story, StorySource, User};
 
 /// instagram scraper client
+#[derive(Debug)]
 pub struct InstagramScraper {
     auth: Authentication,
-    session: Session,
+    pub session: Session,
 }
 
 impl InstagramScraper {
@@ -200,10 +199,10 @@ impl Default for InstagramScraper {
 }
 
 impl InstagramScraper {
-    pub fn with_cookie_provider(cookie_provider: Arc<CookieStoreMutex>) -> Self {
+    pub fn with_cookie_store(cookie_store_path: &str) -> Self {
         Self {
             auth: Authentication::Guest,
-            session: Session::with_cookie_provider(cookie_provider),
+            session: Session::with_cookie_store(cookie_store_path),
         }
     }
 }
