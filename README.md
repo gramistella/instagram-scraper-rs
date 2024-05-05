@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">Developed by <a href="https://veeso.github.io/" target="_blank">@veeso</a></p>
+<p align="center">Altered by <a href="https://github.com/gramistella/" target="_blank">@gramistella</a></p>
 <p align="center">Current version: 0.1.0 (10/09/2022)</p>
 
 <p align="center">
@@ -85,6 +86,15 @@ It is basically a 1:1 copy of the Python [Instagram-scraper](https://github.com/
 - Collect users' posts
 - Collect users' stories
 - Totally async
+
+---  Added features (by @gramistella)
+
+- Updated all crates to latest version
+- Retrieve reel url from shortcode
+- Added cookiestore for session persistence
+- Added a few error types for the new functions
+- Upload reel with url
+- Probably some other things that I don't quite remember
 
 ---
 
