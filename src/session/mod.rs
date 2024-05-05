@@ -5,6 +5,8 @@
 use crate::{types::Comment, Authentication, InstagramScraperError, InstagramScraperResult, Post};
 use reqwest::{header, Client, ClientBuilder, Response};
 use reqwest_cookie_store::CookieStoreMutex;
+use std::fs::OpenOptions;
+use std::io::BufReader;
 use std::sync::Arc;
 use urlencoding::encode;
 
@@ -12,7 +14,11 @@ mod requests;
 use requests::{
     BASE_URL, CHROME_WIN_USER_AGENT, LOGIN_URL, LOGOUT_URL, STORIES_USER_AGENT, X_CSRF_TOKEN,
 };
+use serde_json::to_string_pretty;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
+use crate::errors::{ReelNotFoundStruct, SharedDataInnerErrorResponse};
 use crate::types::RateLimitError;
 pub use crate::{Stories, Story, User};
 
@@ -55,14 +61,27 @@ impl Default for Session {
 
 impl Session {
     pub fn with_cookie_store(cookie_store_path: &str) -> Self {
-        // Load an existing set of cookies, serialized as json
-        let cookie_store = {
-            let file = std::fs::File::open(cookie_store_path)
-                .map(std::io::BufReader::new)
-                .unwrap();
-            // use re-exported version of `CookieStore` for crate compatibility
-            reqwest_cookie_store::CookieStore::load_json(file).unwrap()
+        // Check if the file exists
+        if !std::path::Path::new(cookie_store_path).exists() {
+            // Create a new file if it doesn't exist
+            std::fs::File::create(cookie_store_path).expect("Unable to create file");
+        }
+
+        // Open the existing file
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(cookie_store_path)
+            .expect("Unable to open file");
+
+        let file = BufReader::new(file);
+
+        // Use re-exported version of `CookieStore` for crate compatibility
+        let cookie_store = match reqwest_cookie_store::CookieStore::load_json(file) {
+            Ok(store) => store,
+            Err(_) => reqwest_cookie_store::CookieStore::default(),
         };
+
         let cookie_store = reqwest_cookie_store::CookieStoreMutex::new(cookie_store);
         let cookie_store = std::sync::Arc::new(cookie_store);
 
@@ -164,7 +183,27 @@ impl Session {
         // Proceed with your existing match logic, using the response_text variable
         match serde_json::from_str::<requests::WebProfileResponse>(&response_text) {
             Ok(web_profile_response) => Ok(web_profile_response.data.user),
-            Err(err) => Err(err.into()),
+            Err(err) => {
+                // Create struct from error
+                // "{\"data\":{\"user\":null},\"status\":\"ok\"}"
+
+                match serde_json::from_str::<SharedDataInnerErrorResponse>(&response_text) {
+                    Ok(error_response) => {
+                        if error_response.data.user.is_null() {
+                            return Err(InstagramScraperError::UserNotFound(username.to_string()));
+                        }
+                        let pretty = to_string_pretty(&error_response).unwrap();
+                        println!("{}", pretty);
+                        Err(err.into())
+                    }
+                    Err(err) => {
+                        // Print the response text
+                        let pretty = to_string_pretty(&response_text).unwrap();
+                        println!("{}", pretty);
+                        Err(err.into())
+                    }
+                }
+            }
         }
     }
 
@@ -176,7 +215,11 @@ impl Session {
     ) -> InstagramScraperResult<Stories> {
         self.restrict_authed()?;
         debug!("collecting stories for {}", user_id);
-        let main_stories = self.fetch_stories(format!("{}graphql/query/?query_hash=45246d3fe16ccc6577e0bd297a5db1ab&variables=%7B%22reel_ids%22%3A%5B%22{}%22%5D%2C%22tag_names%22%3A%5B%5D%2C%22location_ids%22%3A%5B%5D%2C%22highlight_reel_ids%22%3A%5B%5D%2C%22precomposed_overlay%22%3Afalse%7D", BASE_URL, user_id))
+        let main_stories = self
+            .fetch_stories(format!(
+                "{}graphql/query/?query_hash=45246d3fe16ccc6577e0bd297a5db1ab&variables=%7B%22reel_ids%22%3A%5B%22{}%22%5D%2C%22tag_names%22%3A%5B%5D%2C%22location_ids%22%3A%5B%5D%2C%22highlight_reel_ids%22%3A%5B%5D%2C%22precomposed_overlay%22%3Afalse%7D",
+                BASE_URL, user_id
+            ))
             .await?;
         debug!("collected main stories; collecting highlight stories");
         // fetch highlight stories
@@ -197,7 +240,11 @@ impl Session {
             let id = chunk.join("%22%2C%22");
             debug!("fetching stories in chunk {}", id);
             highlight_stories.extend(
-                self.fetch_stories(format!("{}graphql/query/?query_hash=45246d3fe16ccc6577e0bd297a5db1ab&variables=%7B%22reel_ids%22%3A%5B%5D%2C%22tag_names%22%3A%5B%5D%2C%22location_ids%22%3A%5B%5D%2C%22highlight_reel_ids%22%3A%5B%22{}%22%5D%2C%22precomposed_overlay%22%3Afalse%7D", BASE_URL, id)).await?
+                self.fetch_stories(format!(
+                    "{}graphql/query/?query_hash=45246d3fe16ccc6577e0bd297a5db1ab&variables=%7B%22reel_ids%22%3A%5B%5D%2C%22tag_names%22%3A%5B%5D%2C%22location_ids%22%3A%5B%5D%2C%22highlight_reel_ids%22%3A%5B%22{}%22%5D%2C%22precomposed_overlay%22%3Afalse%7D",
+                    BASE_URL, id
+                ))
+                .await?,
             );
             if highlight_stories.len() >= max_highlight_stories {
                 debug!("reached maximum amount of highlight stories; leaving loop");
@@ -259,9 +306,15 @@ impl Session {
             match serde_json::from_str::<requests::PostResponse>(&response_text) {
                 Err(err) => {
                     // Print the response text
-                    // println!("Error response text 1: {}", response_text);
-                    // It seems like it tries to redirect to the "We suspect automated behavior" page
-                    return Err(err.into());
+                    if response_text.contains("https://www.instagram.com/accounts/suspended/") {
+                        return Err(InstagramScraperError::AccountSuspended);
+                    } else if response_text.contains("https://www.instagram.com/challenge/") {
+                        return Err(InstagramScraperError::ChallengeRequired);
+                    } else {
+                        let error_text = format!("{}\n{}", err, response_text);
+                        //println!("Response text: {}", response_text);
+                        return Err(InstagramScraperError::ParsingFailed(error_text));
+                    }
                 }
                 Ok(post_response) => {
                     let new_cursor = post_response.end_cursor().map(|x| x.to_string());
@@ -300,15 +353,9 @@ impl Session {
 
         self.restrict_authed().unwrap();
 
-        let full_url = format!(
-            "https://graph.facebook.com/v5.0/{}/media?media_type=REELS&video_url={}&caption={}&access_token={}",
-            user_id,
-            encode(&video_url),
-            encode(&caption),
-            access_token
-        );
+        let full_url = format!("https://graph.facebook.com/v5.0/{}/media?media_type=REELS&video_url={}&caption={}&access_token={}", user_id, encode(&video_url), encode(&caption), access_token);
 
-        println!(" -> [+] Requesting media container from Instagram...");
+        //println!(" -> [+] Requesting media container from Instagram...");
         let response = self.client.post(full_url.clone()).send().await.unwrap();
         let response_text = response.text().await.unwrap().clone();
         let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
@@ -319,16 +366,21 @@ impl Session {
                     "Error while creating media container uploading:\n {}",
                     serde_json::to_string_pretty(&data).unwrap()
                 );
-                return Err(InstagramScraperError::UploadFailed(error_message));
+                return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                    error_message,
+                ));
             }
         };
 
         //println!("Full url: \n{}", full_url);
         //println!("Response: {:?}", response_text);
         let mut status_code = String::new();
-        let status_check_delay = 10;
+        let status_check_delay = 5;
+        let status_check_retries = 12 * 5; // 5 minutes
+        let mut current_retries = 0;
         let mut in_progess = false;
         while status_code != "FINISHED" {
+            current_retries += 1;
             let response = self
                 .client
                 .get(format!(
@@ -340,36 +392,53 @@ impl Session {
                 .unwrap();
             let response_text = response.text().await.unwrap().clone();
             let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+            //let string = to_string_pretty(&data).unwrap();
+            //println!("Response: {}", string);
             status_code = data["status_code"].as_str().unwrap().to_string();
             if status_code == "FINISHED" {
-                println!(" +> [+] Reel uploaded successfully!");
+                //println!(" +> [+] Reel uploaded successfully!");
                 break;
             } else if status_code == "IN_PROGRESS" {
+                if current_retries >= status_check_retries {
+                    let error = "Reel upload timed out";
+                    return Err(InstagramScraperError::UploadFailedRecoverable(
+                        error.to_string(),
+                    ));
+                }
                 if !in_progess {
-                    println!(" +> [+] Uploading reel to Instagram...");
+                    //println!(" +> [+] Uploading reel to Instagram...");
                     in_progess = true;
                 }
             } else if status_code == "ERROR" {
                 let error_message = data["status"].as_str().unwrap().to_string();
                 if error_message.contains("2207050") {
                     let error = "The app user's Instagram Professional account is inactive, checkpointed, or restricted. Advise the app user to sign in to the Instagram app and complete any actions the app requires to re-enable their account.";
-                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
+                    return Err(InstagramScraperError::UploadFailedRecoverable(
+                        error.to_string(),
+                    ));
                 } else if error_message.contains("2207026") {
                     let error =
                         "Unsupported video format. Advise the app user to upload an MOV or MP4";
-                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
+                    return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                        error.to_string(),
+                    ));
                 } else {
                     let error = format!("{}", serde_json::to_string_pretty(&data).unwrap());
-                    return Err(InstagramScraperError::UploadFailed(error.to_string()));
+                    return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                        error.to_string(),
+                    ));
                 }
             } else {
-                println!("Unknown status code: {}", status_code);
+                let error = format!("Unknown status code: {}", status_code);
+                return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                    error.to_string(),
+                ));
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(status_check_delay)).await;
         }
 
-        println!(" +> [+] Publishing reel to Instagram...");
+        //println!(" +> [+] Publishing reel to Instagram...");
         let _response = self
             .client
             .post(format!(
@@ -386,7 +455,8 @@ impl Session {
     pub async fn download_reel(
         &mut self,
         shortcode: &str,
-    ) -> Result<(String, String), InstagramScraperError> {
+        filename: &str,
+    ) -> Result<String, InstagramScraperError> {
         self.restrict_authed().unwrap();
 
         let params = format!(r#"{{"shortcode":"{}"}}"#, shortcode);
@@ -406,9 +476,15 @@ impl Session {
         let data: serde_json::Value = match serde_json::from_str(&response_text) {
             Ok(data) => data,
             Err(err) => {
-                let error_text = format!("{}\n{}", err, response_text);
-                //println!("Response text: {}", response_text);
-                return Err(InstagramScraperError::ParsingFailed(error_text));
+                if response_text.contains("https://www.instagram.com/accounts/suspended/") {
+                    return Err(InstagramScraperError::AccountSuspended);
+                } else if response_text.contains("https://www.instagram.com/challenge/") {
+                    return Err(InstagramScraperError::ChallengeRequired);
+                } else {
+                    let error_text = format!("{}\n{}", err, response_text);
+                    //println!("Response text: {}", response_text);
+                    return Err(InstagramScraperError::ParsingFailed(error_text));
+                }
             }
         };
         let video_url = if let Some(extracted_url) = data["data"]["shortcode_media"]["video_url"]
@@ -427,8 +503,23 @@ impl Session {
             let rate_limit_error: RateLimitError = match serde_json::from_str(&pretty) {
                 Ok(rate_limit_error) => rate_limit_error,
                 Err(err) => {
-                    let error_text = format!("{}\n{}", err, pretty);
-                    return Err(InstagramScraperError::ParsingFailed(error_text));
+                    match serde_json::from_str::<ReelNotFoundStruct>(&pretty) {
+                        Ok(reel_not_found) => {
+                            if reel_not_found.data.shortcode_media.is_null() {
+                                return Err(InstagramScraperError::MediaNotFound(
+                                    shortcode.to_string(),
+                                ));
+                            }
+                            let pretty = to_string_pretty(&reel_not_found).unwrap();
+                            println!("{}", pretty);
+                            return Err(err.into());
+                        }
+                        Err(err) => {
+                            // Print the response text
+                            let error_text = format!("{}\n{}", err, pretty);
+                            return Err(InstagramScraperError::ParsingFailed(error_text));
+                        }
+                    }
                 }
             };
 
@@ -458,7 +549,13 @@ impl Session {
             //println!("'edges' field not found or is not an array \n{}", pretty);
         }
 
-        return Ok((video_url, caption));
+        let path = format!("temp/{filename}");
+        let response = reqwest::get(video_url).await.unwrap();
+        let bytes = response.bytes().await.unwrap();
+        let mut file = File::create(path).await.unwrap();
+        file.write_all(&bytes).await.unwrap();
+
+        return Ok(caption);
     }
 
     /// Scrape comments

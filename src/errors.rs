@@ -29,8 +29,18 @@ pub enum InstagramScraperError {
     RateLimitExceeded(String),
     #[error("Parsing failed: {0}")]
     ParsingFailed(String),
-    #[error("Upload failed: {0}")]
-    UploadFailed(String),
+    #[error("Upload failed (recoverable): {0}")]
+    UploadFailedRecoverable(String),
+    #[error("Upload failed (non recoverable): {0}")]
+    UploadFailedNonRecoverable(String),
+    #[error("Account suspended")]
+    AccountSuspended,
+    #[error("Challenge required")]
+    ChallengeRequired,
+    #[error("User {0} not found. Maybe it's private or doesn't exist.")]
+    UserNotFound(String),
+    #[error("Media {0} not found. Maybe it's private or doesn't exist.")]
+    MediaNotFound(String),
 }
 
 impl From<serde_json::Error> for InstagramScraperError {
@@ -49,4 +59,30 @@ impl From<reqwest::Error> for InstagramScraperError {
     fn from(e: reqwest::Error) -> Self {
         Self::Http(e)
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SharedDataInnerError {
+    pub user: serde_json::Value,
+}
+#[derive(Serialize, Deserialize)]
+pub struct SharedDataInnerErrorResponse {
+    pub data: SharedDataInnerError,
+    pub status: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReelNotFoundInnerData {
+    pub shortcode_media: serde_json::Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ReelNotFoundInnerExtensions {
+    pub is_final: serde_json::Value,
+}
+#[derive(Serialize, Deserialize)]
+pub struct ReelNotFoundStruct {
+    pub data: ReelNotFoundInnerData,
+    pub extensions: ReelNotFoundInnerExtensions,
+    pub status: String,
 }

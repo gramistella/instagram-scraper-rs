@@ -148,9 +148,10 @@ impl InstagramScraper {
     pub async fn download_reel(
         &mut self,
         shortcode: &str,
-    ) -> InstagramScraperResult<(String, String)> {
-        let (url, caption) = self.session.download_reel(shortcode).await?;
-        Ok((url, caption))
+        filename: &str,
+    ) -> InstagramScraperResult<String> {
+        let caption = self.session.download_reel(shortcode, filename).await?;
+        Ok(caption)
     }
 
     pub async fn upload_reel(
