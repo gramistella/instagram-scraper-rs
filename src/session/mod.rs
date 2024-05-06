@@ -372,14 +372,14 @@ impl Session {
             }
         };
 
-        //println!("Full url: \n{}", full_url);
-        //println!("Response: {:?}", response_text);
+
         let mut status_code = String::new();
-        let status_check_delay = 5;
-        let status_check_retries = 12 * 5; // 5 minutes
         let mut current_retries = 0;
-        let mut in_progess = false;
-        while status_code != "FINISHED" {
+        ///                                         1m,     2m, 3m, 4m, 5m, 6m, 7m, 8m, 9m, 10m
+        let delay_vec = vec![15,10,5,5,10,15, 30, 30, 60, 60, 60, 60 ,60 ,60, 60, 60];
+
+        let mut uploaded_successfully = false;
+        for delay in delay_vec {
             current_retries += 1;
             let response = self
                 .client
@@ -397,18 +397,10 @@ impl Session {
             status_code = data["status_code"].as_str().unwrap().to_string();
             if status_code == "FINISHED" {
                 //println!(" +> [+] Reel uploaded successfully!");
+                uploaded_successfully = true;
                 break;
             } else if status_code == "IN_PROGRESS" {
-                if current_retries >= status_check_retries {
-                    let error = "Reel upload timed out";
-                    return Err(InstagramScraperError::UploadFailedRecoverable(
-                        error.to_string(),
-                    ));
-                }
-                if !in_progess {
-                    //println!(" +> [+] Uploading reel to Instagram...");
-                    in_progess = true;
-                }
+                // Do nothing
             } else if status_code == "ERROR" {
                 let error_message = data["status"].as_str().unwrap().to_string();
                 if error_message.contains("2207050") {
@@ -435,7 +427,14 @@ impl Session {
                 ));
             }
 
-            tokio::time::sleep(std::time::Duration::from_secs(status_check_delay)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        }
+
+        if !uploaded_successfully {
+            let error = "Reel upload timed out";
+            return Err(InstagramScraperError::UploadFailedRecoverable(
+                error.to_string(),
+            ));
         }
 
         //println!(" +> [+] Publishing reel to Instagram...");
