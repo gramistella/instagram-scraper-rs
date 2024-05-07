@@ -372,11 +372,9 @@ impl Session {
             }
         };
 
-
-        let mut status_code = String::new();
         let mut current_retries = 0;
-        ///                                         1m,     2m, 3m, 4m, 5m, 6m, 7m, 8m, 9m, 10m
-        let delay_vec = vec![15,10,5,5,10,15, 30, 30, 60, 60, 60, 60 ,60 ,60, 60, 60];
+        //                                         1m,     2m, 3m, 4m, 5m, 6m, 7m, 8m, 9m, 10m
+        let delay_vec = vec![15, 15, 15, 15, 30, 30, 60, 60, 60, 60, 60, 60, 60, 60];
 
         let mut uploaded_successfully = false;
         for delay in delay_vec {
@@ -394,7 +392,7 @@ impl Session {
             let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
             //let string = to_string_pretty(&data).unwrap();
             //println!("Response: {}", string);
-            status_code = data["status_code"].as_str().unwrap().to_string();
+            let status_code = data["status_code"].as_str().unwrap().to_string();
             if status_code == "FINISHED" {
                 //println!(" +> [+] Reel uploaded successfully!");
                 uploaded_successfully = true;
