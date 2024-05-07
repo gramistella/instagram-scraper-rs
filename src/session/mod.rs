@@ -371,14 +371,12 @@ impl Session {
                 ));
             }
         };
-
-        let mut current_retries = 0;
         //                                         1m,     2m, 3m, 4m, 5m, 6m, 7m, 8m, 9m, 10m
         let delay_vec = vec![15, 15, 15, 15, 30, 30, 60, 60, 60, 60, 60, 60, 60, 60];
 
         let mut uploaded_successfully = false;
         for delay in delay_vec {
-            current_retries += 1;
+
             let response = self
                 .client
                 .get(format!(
