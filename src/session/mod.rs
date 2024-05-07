@@ -376,7 +376,6 @@ impl Session {
 
         let mut uploaded_successfully = false;
         for delay in delay_vec {
-
             let response = self
                 .client
                 .get(format!(
