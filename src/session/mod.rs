@@ -345,7 +345,7 @@ impl Session {
         access_token: &str,
         video_url: &str,
         caption: &str,
-    ) -> Result<(), InstagramScraperError> {
+    ) -> Result<String, InstagramScraperError> {
         // You only need these three
         // https://graph.facebook.com/v5.0/{ig-user-id}/media?video_url={video-url}&caption={caption}&access_token={access-token}
         // https://graph.facebook.com/v19.0/{ig-container-id}?fields=status_code
@@ -433,7 +433,7 @@ impl Session {
         }
 
         //println!(" +> [+] Publishing reel to Instagram...");
-        let _response = self
+        let response = self
             .client
             .post(format!(
                 "https://graph.facebook.com/v5.0/{}/media_publish?creation_id={}&access_token={}",
@@ -442,10 +442,48 @@ impl Session {
             .send()
             .await
             .unwrap();
-        //let response_text = response.text().await.unwrap().clone();
 
-        Ok(())
+        let response_text = response.text().await.unwrap().clone();
+        let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+        let media_id = data.get("id").unwrap().to_string().replace("\"", "");
+
+        Ok(media_id)
     }
+
+    pub async fn comment(
+        &mut self,
+        media_id: &str,
+        access_token: &str,
+        caption: &str,
+    ) -> Result<(), InstagramScraperError> {
+        match self
+            .client
+            .post(format!(
+                "https://graph.facebook.com/v5.0/{}/comments?message={}&access_token={}",
+                media_id,
+                encode(caption),
+                access_token
+            ))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                if response.status().is_success() {
+                    //println!("Commented successfully!");
+                    Ok(())
+                } else {
+                    let response_string = format!("{:?}", response);
+                    println!("Unsuccessful comment! Response received: \n {response_string}");
+                    Err(InstagramScraperError::CommentFailed(response_string))
+                }
+            }
+            Err(e) => {
+                let e = format!("{}", e);
+                Err(InstagramScraperError::CommentFailed(e))
+            }
+        }
+    }
+
     pub async fn download_reel(
         &mut self,
         shortcode: &str,

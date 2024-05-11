@@ -160,17 +160,28 @@ impl InstagramScraper {
         access_token: &str,
         url: &str,
         caption: &str,
-    ) -> InstagramScraperResult<()> {
+    ) -> InstagramScraperResult<String> {
         match self
             .session
             .upload_reel(user_id, access_token, url, caption)
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(media_id) => Ok(media_id),
             Err(e) => Err(e),
         }
     }
 
+    pub async fn comment(
+        &mut self,
+        media_id: &str,
+        access_token: &str,
+        caption: &str,
+    ) -> InstagramScraperResult<()> {
+        match self.session.comment(media_id, access_token, caption).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
     /// Scrape comments from a post.
     /// You can provide the maximum amount of comments to fetch. Use usize::MAX to get all the available posts.
     /// Keep in mind that a GET request will be sent each 50 posts.

@@ -41,6 +41,8 @@ pub enum InstagramScraperError {
     UserNotFound(String),
     #[error("Media {0} not found. Maybe it's private or doesn't exist.")]
     MediaNotFound(String),
+    #[error("Failed to comment: {0}")]
+    CommentFailed(String),
 }
 
 impl From<serde_json::Error> for InstagramScraperError {
