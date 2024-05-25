@@ -33,6 +33,8 @@ pub enum InstagramScraperError {
     UploadFailedRecoverable(String),
     #[error("Upload failed (non recoverable): {0}")]
     UploadFailedNonRecoverable(String),
+    #[error("Upload succeeded but failed to retrieve media id after upload: {0}")]
+    UploadSucceededButFailedToRetrieveId(String),
     #[error("Account suspended")]
     AccountSuspended,
     #[error("Challenge required")]
@@ -87,4 +89,27 @@ pub struct ReelNotFoundStruct {
     pub data: ReelNotFoundInnerData,
     pub extensions: ReelNotFoundInnerExtensions,
     pub status: String,
+}
+
+
+pub type InstagramUploaderResult<T> = Result<T, InstagramUploaderError>;
+
+/// Instagram scraper library error
+#[derive(Debug, Error)]
+pub enum InstagramUploaderError {
+    #[error("Upload failed (recoverable): {0}")]
+    UploadFailedRecoverable(String),
+    #[error("Upload failed (non recoverable): {0}")]
+    UploadFailedNonRecoverable(String),
+    #[error("Upload succeeded but failed to retrieve media id after upload: {0}")]
+    UploadSucceededButFailedToRetrieveId(String),
+}
+
+pub type InstagramCommentResult<T> = Result<T, InstagramCommentError>;
+
+/// Instagram scraper library error
+#[derive(Debug, Error)]
+pub enum InstagramCommentError {
+    #[error("Failed to comment: {0}")]
+    CommentFailed(String),
 }

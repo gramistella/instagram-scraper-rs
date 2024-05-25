@@ -18,7 +18,7 @@ use serde_json::to_string_pretty;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-use crate::errors::{ReelNotFoundStruct, SharedDataInnerErrorResponse};
+use crate::errors::{InstagramCommentError, InstagramCommentResult, InstagramUploaderError, ReelNotFoundStruct, SharedDataInnerErrorResponse};
 use crate::types::RateLimitError;
 pub use crate::{Stories, Story, User};
 
@@ -345,7 +345,7 @@ impl Session {
         access_token: &str,
         video_url: &str,
         caption: &str,
-    ) -> Result<String, InstagramScraperError> {
+    ) -> Result<String, InstagramUploaderError> {
         // You only need these three
         // https://graph.facebook.com/v5.0/{ig-user-id}/media?video_url={video-url}&caption={caption}&access_token={access-token}
         // https://graph.facebook.com/v19.0/{ig-container-id}?fields=status_code
@@ -366,7 +366,7 @@ impl Session {
                     "Error while creating media container uploading:\n {}",
                     serde_json::to_string_pretty(&data).unwrap()
                 );
-                return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                return Err(InstagramUploaderError::UploadFailedNonRecoverable(
                     error_message,
                 ));
             }
@@ -400,24 +400,24 @@ impl Session {
                 let error_message = data["status"].as_str().unwrap().to_string();
                 if error_message.contains("2207050") {
                     let error = "The app user's Instagram Professional account is inactive, checkpointed, or restricted. Advise the app user to sign in to the Instagram app and complete any actions the app requires to re-enable their account.";
-                    return Err(InstagramScraperError::UploadFailedRecoverable(
+                    return Err(InstagramUploaderError::UploadFailedRecoverable(
                         error.to_string(),
                     ));
                 } else if error_message.contains("2207026") {
                     let error =
                         "Unsupported video format. Advise the app user to upload an MOV or MP4";
-                    return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                    return Err(InstagramUploaderError::UploadFailedNonRecoverable(
                         error.to_string(),
                     ));
                 } else {
                     let error = format!("{}", serde_json::to_string_pretty(&data).unwrap());
-                    return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                    return Err(InstagramUploaderError::UploadFailedNonRecoverable(
                         error.to_string(),
                     ));
                 }
             } else {
                 let error = format!("Unknown status code: {}", status_code);
-                return Err(InstagramScraperError::UploadFailedNonRecoverable(
+                return Err(InstagramUploaderError::UploadFailedNonRecoverable(
                     error.to_string(),
                 ));
             }
@@ -427,7 +427,7 @@ impl Session {
 
         if !uploaded_successfully {
             let error = "Reel upload timed out";
-            return Err(InstagramScraperError::UploadFailedRecoverable(
+            return Err(InstagramUploaderError::UploadFailedRecoverable(
                 error.to_string(),
             ));
         }
@@ -445,7 +445,15 @@ impl Session {
 
         let response_text = response.text().await.unwrap().clone();
         let data: serde_json::Value = serde_json::from_str(&response_text).unwrap();
-        let media_id = data.get("id").unwrap().to_string().replace("\"", "");
+        let media_id = match data.get("id") {
+            Some(id) => id.to_string().replace("\"", ""),
+            None => {
+                let error_message = format!("{}", to_string_pretty(&data).unwrap());
+                return Err(InstagramUploaderError::UploadSucceededButFailedToRetrieveId(
+                    error_message,
+                ));
+            }
+        };
 
         Ok(media_id)
     }
@@ -455,7 +463,7 @@ impl Session {
         media_id: &str,
         access_token: &str,
         caption: &str,
-    ) -> Result<(), InstagramScraperError> {
+    ) -> InstagramCommentResult<()> {
         match self
             .client
             .post(format!(
@@ -474,12 +482,12 @@ impl Session {
                 } else {
                     let response_string = format!("{:?}", response);
                     println!("Unsuccessful comment! Response received: \n {response_string}");
-                    Err(InstagramScraperError::CommentFailed(response_string))
+                    Err(InstagramCommentError::CommentFailed(response_string))
                 }
             }
             Err(e) => {
                 let e = format!("{}", e);
-                Err(InstagramScraperError::CommentFailed(e))
+                Err(InstagramCommentError::CommentFailed(e))
             }
         }
     }

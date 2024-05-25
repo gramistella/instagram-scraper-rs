@@ -63,8 +63,9 @@ use session::Session;
 use types::Authentication;
 
 // exports
-pub use errors::{InstagramScraperError, InstagramScraperResult};
+pub use errors::{InstagramScraperError, InstagramScraperResult, InstagramUploaderError};
 pub use types::{Comment, Post, Stories, Story, StorySource, User};
+use crate::errors::{InstagramCommentResult, InstagramUploaderResult};
 
 /// instagram scraper client
 #[derive(Debug)]
@@ -160,7 +161,7 @@ impl InstagramScraper {
         access_token: &str,
         url: &str,
         caption: &str,
-    ) -> InstagramScraperResult<String> {
+    ) -> InstagramUploaderResult<String> {
         match self
             .session
             .upload_reel(user_id, access_token, url, caption)
@@ -176,7 +177,7 @@ impl InstagramScraper {
         media_id: &str,
         access_token: &str,
         caption: &str,
-    ) -> InstagramScraperResult<()> {
+    ) -> InstagramCommentResult<()> {
         match self.session.comment(media_id, access_token, caption).await {
             Ok(_) => Ok(()),
             Err(e) => Err(e),

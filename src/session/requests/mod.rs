@@ -16,7 +16,7 @@ pub use post::PostResponse;
 pub use stories::{HighlightReels, ReelsMedia};
 pub use user::{UserInfoResponse, WebProfileResponse};
 
-// -- constrants
+// -- constants
 pub const X_CSRF_TOKEN: &str = "X-CSRFToken";
 pub const BASE_URL: &str = "https://www.instagram.com/";
 pub const LOGIN_URL: &str = concatcp!(BASE_URL, "accounts/login/ajax/");
